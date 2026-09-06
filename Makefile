@@ -9,7 +9,7 @@
 # native binary for local testing instead.
 
 CC       ?= gcc
-CFLAGS   ?= -Wall -Wextra -Werror -std=gnu11 -Iinclude
+CFLAGS   += -Wall -Wextra -Werror -std=gnu11 -Iinclude
 LDFLAGS  ?=
 
 SRC_DIR   := src
