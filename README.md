@@ -155,12 +155,10 @@ sudo /etc/init.d/data-logger status
 sudo /etc/init.d/data-logger stop
 ```
 
-Confirm the startup message is visible via the journal:
+Confirm the log messages:
 
 ```sh
-journalctl -t data-logger -n 20
-# or, on systems without systemd-journald:
-tail -n 20 /var/log/syslog | grep data-logger
+grep data-logger /var/log/messages
 ```
 
 You should see an `data-logger starting up` line. Stop the process (via
