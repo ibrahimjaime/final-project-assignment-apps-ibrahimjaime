@@ -9,8 +9,9 @@
 # native binary for local testing instead.
 
 CC       ?= gcc
-CFLAGS   += -Wall -Wextra -Werror -std=gnu11 -Iinclude
+CFLAGS   += -Wall -Wextra -Werror -std=gnu11 -Iinclude -pthread
 LDFLAGS  ?=
+LDLIBS = -lserialport -pthread
 
 SRC_DIR   := src
 INC_DIR   := include
@@ -25,7 +26,7 @@ OBJS := $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o,$(SRCS))
 all: $(TARGET)
 
 $(TARGET): $(OBJS)
-	$(CC) $(OBJS) -o $@ $(LDFLAGS)
+	$(CC) $(LDFLAGS) $(OBJS) -o $@ $(LDLIBS)
 
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
