@@ -7,6 +7,7 @@
 #include "daemon.h"
 #include "pidfile.h"
 #include "serial_reader.h"
+#include "telemetry.h"
 
 #define PIDFILE_PATH "/var/run/data-logger.pid"
 
@@ -70,7 +71,27 @@ static void print_usage(const char *prog_name)
 static void on_telemetry_line(const char *line, size_t len, void *user_data)
 {
     (void)user_data;
-    syslog(LOG_DEBUG, "telemetry line (%zu bytes): %s", len, line);
+    telemetry_record_t rec;
+    char err[128];
+    bool result = telemetry_parse_line(line, len,
+                                   &rec, err, sizeof(err));
+
+    if (!result)
+    {
+        syslog(LOG_DEBUG, "telemetry read error: %s", err);
+    } else {
+        syslog(LOG_DEBUG, "telemetry read successful | "
+                    "ts: %.3f ms | "
+                    "att(p: %.2f, r: %.2f, y: %.2f) | "
+                    "spd(lon: %.2f, lat: %.2f, v: %.2f) | "
+                    "pos(lon: %.6f, lat: %.6f)", 
+        rec.ts,
+        rec.attitude.pitch, rec.attitude.roll, rec.attitude.yaw,
+        rec.speed.vel_lon,  rec.speed.vel_lat,  rec.speed.v,
+        rec.position.lon,   rec.position.lat);
+    }
+
+    return;
 }
 
 int main(int argc, char *argv[])

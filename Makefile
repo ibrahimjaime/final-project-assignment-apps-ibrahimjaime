@@ -1,4 +1,4 @@
-# Data Data Logging System — build
+# Data Logging System — build
 #
 # Cross-compilation: source the Yocto SDK's environment-setup-* script
 # before running make. That script exports CC (and CFLAGS/LDFLAGS) as the
@@ -9,17 +9,20 @@
 # native binary for local testing instead.
 
 CC       ?= gcc
-CFLAGS   += -Wall -Wextra -Werror -std=gnu11 -Iinclude -pthread
+CFLAGS   += -Wall -Wextra -Werror -std=gnu11 -Iinclude -Ivendor/cjson -pthread
 LDFLAGS  ?=
-LDLIBS = -lserialport -pthread
+LDLIBS = -lserialport -pthread -lm
 
-SRC_DIR   := src
-INC_DIR   := include
-BUILD_DIR := build
-TARGET    := data-logger
+SRC_DIR    := src
+INC_DIR    := include
+VENDOR_DIR := vendor/cjson
+BUILD_DIR  := build
+TARGET     := data-logger
 
-SRCS := $(wildcard $(SRC_DIR)/*.c)
-OBJS := $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o,$(SRCS))
+vpath %.c $(SRC_DIR) $(VENDOR_DIR)
+
+SRCS := $(notdir $(wildcard $(SRC_DIR)/*.c)) $(notdir $(wildcard $(VENDOR_DIR)/*.c))
+OBJS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(SRCS))
 
 .PHONY: all clean
 
@@ -28,7 +31,7 @@ all: $(TARGET)
 $(TARGET): $(OBJS)
 	$(CC) $(LDFLAGS) $(OBJS) -o $@ $(LDLIBS)
 
-$(BUILD_DIR)/%.o: $(SRC_DIR)/%.c | $(BUILD_DIR)
+$(BUILD_DIR)/%.o: %.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR):

@@ -15,14 +15,22 @@ state machine are implemented in later issues on top of this skeleton.
 ├── include/              # public headers, shared across src/
 │   ├── daemon.h            # daemonize(): detach from terminal, new session
 │   ├── logger.h            # syslog wrapper
-│   └── pidfile.h           # write/remove /var/run/data-logger.pid
+│   ├── pidfile.h           # write/remove /var/run/data-logger.pid
+│   ├── serial_reader.h
+│   └── telemetry.h
 ├── src/                  # implementation files
 │   ├── main.c              # entry point, arg parsing, signal handling, main loop
 │   ├── daemon.c             # double-fork daemonization
 │   ├── logger.c             # syslog wrapper implementation
-│   └── pidfile.c            # PID file implementation
-└── scripts/               # target-side service management
-    └── data-logger-start-stop.sh   # start/stop/restart/status, aesdsocket-style
+│   ├── pidfile.c            # PID file implementation
+│   ├── serial_reader.c      # Device reader thread
+│   └── telemetry.c          # JSON parse
+├── scripts/               # target-side service management
+│   └── data-logger-start-stop.sh   # start/stop/restart/status, aesdsocket-style
+├── vendor/
+│   └── cjson #json parser library
+└── tests/
+    └── test_telemetry.c   #automated test for telemetry parser functionality
 ```
 
 ## Why this is a daemon
@@ -49,7 +57,7 @@ binary.
   directory — you only need to add the SDK population step below, not start
   over.
 
-## Option A — Native build (for local development/testing)
+## Native build (for local development/testing)
 
 ```sh
 make
@@ -60,7 +68,7 @@ make clean
 This is the fastest way to confirm the code compiles and the
 startup/shutdown logging works before deploying to hardware.
 
-## Option B — Cross-compile for the Raspberry Pi 4 (Yocto SDK)
+## Cross-compile for the Raspberry Pi 4 (Yocto SDK)
 
 These steps assume Yocto/Poky **from scratch**. If you already have a
 working `poky` + `meta-raspberrypi` setup from prior coursework, skip to
@@ -167,6 +175,34 @@ You should see an `data-logger starting up` line. Stop the process (via
 `data-logger shutting down` line and confirm `/var/run/data-logger.pid`
 was removed — this proves the signal handler drives a clean shutdown
 rather than an abrupt kill.
+
+## Dependencies
+
+### cJSON
+
+Telemetry JSON payloads (see `on_telemetry_line`) are parsed using
+[cJSON](https://github.com/DaveGamble/cJSON) (MIT licensed).
+
+This project vendors cJSON directly rather than requiring a system
+package, so no extra install step is needed:
+
+```
+vendor/cjson/cJSON.h
+vendor/cjson/cJSON.c
+```
+
+To refresh the vendored copy from upstream:
+
+```sh
+curl -sL -o vendor/cjson/cJSON.h https://raw.githubusercontent.com/DaveGamble/cJSON/master/cJSON.h
+curl -sL -o vendor/cjson/cJSON.c https://raw.githubusercontent.com/DaveGamble/cJSON/master/cJSON.c
+```
+
+If you'd rather use a system/package-manager copy instead of vendoring
+(e.g. `apt install libcjson-dev` on Debian/Ubuntu, or `brew install
+cjson` on macOS), drop the `vendor/cjson` directory, add `#include
+<cjson/cJSON.h>` in `telemetry.c`, and link with `-lcjson` instead of
+compiling `cJSON.c` directly.
 
 ## Notes
 
