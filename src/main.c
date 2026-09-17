@@ -8,6 +8,7 @@
 #include "pidfile.h"
 #include "serial_reader.h"
 #include "telemetry.h"
+#include "ring_buffer.h"
 
 #define PIDFILE_PATH "/var/run/data-logger.pid"
 
@@ -63,14 +64,18 @@ static void print_usage(const char *prog_name)
 
 /*
  * Called from the serial reader's dedicated thread whenever a
- * complete JSON telemetry line has arrived. For now this just logs
- * it at debug level to prove end-to-end reception; RAM buffering,
- * JSON parsing (cJSON), and SQLite persistence are separate issues
- * that will replace/extend this callback.
+ * complete JSON telemetry line has arrived. Parses it and, on
+ * success, hands it off to the thread-safe RAM ring buffer
+ * for the persistence thread to drain later. SQLite
+ * persistence itself is a separate issue that will add a consumer
+ * thread calling rb_dequeue() on the same buffer.
+ *
+ * user_data is the ring_buffer_t* passed in via sr_reader_create()
+ * below -- see main().
  */
 static void on_telemetry_line(const char *line, size_t len, void *user_data)
 {
-    (void)user_data;
+    ring_buffer_t *rb = (ring_buffer_t *)user_data;
     telemetry_record_t rec;
     char err[128];
     bool result = telemetry_parse_line(line, len,
@@ -79,19 +84,23 @@ static void on_telemetry_line(const char *line, size_t len, void *user_data)
     if (!result)
     {
         syslog(LOG_DEBUG, "telemetry read error: %s", err);
-    } else {
-        syslog(LOG_DEBUG, "telemetry read successful | "
-                    "ts: %.3f ms | "
-                    "att(p: %.2f, r: %.2f, y: %.2f) | "
-                    "spd(lon: %.2f, lat: %.2f, v: %.2f) | "
-                    "pos(lon: %.6f, lat: %.6f)", 
-        rec.ts,
-        rec.attitude.pitch, rec.attitude.roll, rec.attitude.yaw,
-        rec.speed.vel_lon,  rec.speed.vel_lat,  rec.speed.v,
-        rec.position.lon,   rec.position.lat);
+        return;
     }
 
-    return;
+    syslog(LOG_DEBUG, "telemetry read successful | "
+                "ts: %.3f ms | "
+                "att(p: %.2f, r: %.2f, y: %.2f) | "
+                "spd(lon: %.2f, lat: %.2f, v: %.2f) | "
+                "pos(lon: %.6f, lat: %.6f)", 
+    rec.ts,
+    rec.attitude.pitch, rec.attitude.roll, rec.attitude.yaw,
+    rec.speed.vel_lon,  rec.speed.vel_lat,  rec.speed.v,
+    rec.position.lon,   rec.position.lat);
+
+    /* Never blocks, never fails -- see ring_buffer.h for the
+     * documented drop-oldest policy if the persistence thread
+     * (Sprint 2) ever falls behind. */
+    rb_enqueue(rb, &rec);
 }
 
 int main(int argc, char *argv[])
@@ -127,6 +136,18 @@ int main(int argc, char *argv[])
         syslog(LOG_WARNING, "could not write pidfile %s", PIDFILE_PATH);
     }
 
+    /* In-memory telemetry buffer. Lives for the whole daemon
+     * lifetime: created before the serial reader starts producing into
+     * it, destroyed after the reader thread has been stopped so nothing
+     * can still be enqueuing into it. */
+    ring_buffer_t telemetry_rb;
+    if (rb_init(&telemetry_rb) != 0) {
+        syslog(LOG_ERR, "failed to initialize telemetry ring buffer");
+        pidfile_remove(PIDFILE_PATH);
+        logger_shutdown();
+        return EXIT_FAILURE;
+    }
+
     sr_config_t serial_cfg;
     sr_config_default(&serial_cfg);
     snprintf(serial_cfg.device_path, sizeof(serial_cfg.device_path), "%s",
@@ -139,9 +160,11 @@ int main(int argc, char *argv[])
 
     syslog(LOG_INFO, "using serial device '%s'", device_path);
 
-    sr_reader_t *serial_reader = sr_reader_create(&serial_cfg, on_telemetry_line, NULL);
+    sr_reader_t *serial_reader = sr_reader_create(&serial_cfg, on_telemetry_line,
+                                                   &telemetry_rb);
     if (!serial_reader) {
         syslog(LOG_ERR, "failed to create serial reader for '%s'", device_path);
+        rb_destroy(&telemetry_rb);
         pidfile_remove(PIDFILE_PATH);
         logger_shutdown();
         return EXIT_FAILURE;
@@ -150,21 +173,27 @@ int main(int argc, char *argv[])
     if (sr_reader_start(serial_reader) != 0) {
         syslog(LOG_ERR, "failed to start serial reader thread");
         sr_reader_destroy(serial_reader);
+        rb_destroy(&telemetry_rb);
         pidfile_remove(PIDFILE_PATH);
         logger_shutdown();
         return EXIT_FAILURE;
     }
 
     /* Main loop: idles while the serial reader thread (decoupled,
-     * per the architecture) does the actual I/O. RAM buffering,
-     * parsing, and persistence hook in here on top of
-     * on_telemetry_line in later issues. */
+     * per the architecture) does the actual I/O, enqueuing parsed
+     * records into telemetry_rb. The persistence thread
+     * hooks in here, draining telemetry_rb with rb_dequeue() and
+     * writing to SQLite. */
     while (g_running) {
         sleep(1);
     }
 
     sr_reader_stop(serial_reader);
     sr_reader_destroy(serial_reader);
+
+    /* Safe to destroy now: the reader thread that could enqueue into
+     * telemetry_rb has been stopped above. */
+    rb_destroy(&telemetry_rb);
 
     pidfile_remove(PIDFILE_PATH);
     logger_shutdown();

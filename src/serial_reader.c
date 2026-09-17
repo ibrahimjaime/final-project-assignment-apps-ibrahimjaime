@@ -194,8 +194,7 @@ static void *sr_thread_main(void *arg)
 
         if (n > 0)
         {
-            syslog(LOG_DEBUG, "Read %d bytes from '%s': %.*s",
-                   n, r->cfg.device_path, n, rbuf);
+            syslog(LOG_DEBUG, "Read %d bytes from '%s': %.*s", n, r->cfg.device_path, n, rbuf);
             sr_feed_bytes(r, rbuf, n);
         }
         else if (n == 0)
