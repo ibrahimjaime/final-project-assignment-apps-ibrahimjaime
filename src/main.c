@@ -31,26 +31,80 @@
 #define SERIAL_DEVICE_PATH \
     "/dev/ttyACM0"
 
-/* Graceful-shutdown pattern:
- * a single volatile flag flipped by the signal handler, checked by
- * the main loop, so cleanup always happens on the main thread. */
+/*
+ * Signal handling pattern:
+ * handlers only touch volatile sig_atomic_t variables; all real work
+ * (printing, logging, cleanup) happens in the main loop.
+ *
+ * SIGUSR1/SIGUSR2 use counters instead of boolean flags so that two
+ * signals delivered back-to-back are still reported as two messages
+ * (a plain flag would collapse them into one).
+ *
+ * The counters are only modified while the main thread is inside
+ * sigsuspend() (all four signals are blocked the rest of the time),
+ * so the main loop can read and reset them without races.
+ */
 static volatile sig_atomic_t g_running = 1;
+static volatile sig_atomic_t g_usr1_count = 0; /* START */
+static volatile sig_atomic_t g_usr2_count = 0; /* STOP  */
 
-static void handle_signal(int signo)
+static void handle_terminate(int signo)
 {
     (void)signo;
     g_running = 0;
 }
 
-static void install_signal_handlers(void)
+static void handle_usr1(int signo)
+{
+    (void)signo;
+    g_usr1_count++;
+}
+
+static void handle_usr2(int signo)
+{
+    (void)signo;
+    g_usr2_count++;
+}
+
+static int install_one_handler(int signo, void (*handler)(int))
 {
     struct sigaction sa;
-    sa.sa_handler = handle_signal;
+    sa.sa_handler = handler;
     sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0;
+    sa.sa_flags = 0; /* no SA_RESTART: let sigsuspend()/syscalls wake up */
 
-    sigaction(SIGINT, &sa, NULL);
-    sigaction(SIGTERM, &sa, NULL);
+    return sigaction(signo, &sa, NULL);
+}
+
+static int install_signal_handlers(void)
+{
+    if (install_one_handler(SIGINT,  handle_terminate) != 0) return -1;
+    if (install_one_handler(SIGTERM, handle_terminate) != 0) return -1;
+    if (install_one_handler(SIGUSR1, handle_usr1)      != 0) return -1;
+    if (install_one_handler(SIGUSR2, handle_usr2)      != 0) return -1;
+    return 0;
+}
+
+/*
+ * Blocks the signals we care about for the calling thread and returns
+ * the previous mask in *old_mask (to be handed to sigsuspend()).
+ *
+ * Must be called BEFORE any thread is created (i.e. before
+ * sr_reader_start()): new threads inherit the blocked mask, so these
+ * process-directed signals are always delivered to the main thread,
+ * and only while it sits in sigsuspend(). This also closes the classic
+ * race between "check the flag" and "go to sleep".
+ */
+static int block_signals(sigset_t *old_mask)
+{
+    sigset_t block;
+    sigemptyset(&block);
+    sigaddset(&block, SIGINT);
+    sigaddset(&block, SIGTERM);
+    sigaddset(&block, SIGUSR1);
+    sigaddset(&block, SIGUSR2);
+
+    return sigprocmask(SIG_BLOCK, &block, old_mask);
 }
 
 static void print_usage(const char *prog_name)
@@ -60,6 +114,17 @@ static void print_usage(const char *prog_name)
     fprintf(stderr, "  -p   serial device path (default: %s)\n", SERIAL_DEVICE_PATH);
     fprintf(stderr, "       e.g. -p /dev/serial/by-id/usb-...-if00-port0\n");
     fprintf(stderr, "       (list yours with: ls -l /dev/serial/by-id/)\n");
+}
+
+/*
+ * Prints to stdout (visible when running in the foreground) and to
+ * syslog (the only place visible when running with -d).
+ */
+static void announce(int priority, const char *msg)
+{
+    printf("%s\n", msg);
+    fflush(stdout);
+    syslog(priority, "%s", msg);
 }
 
 /*
@@ -130,7 +195,34 @@ int main(int argc, char *argv[])
     /* openlog() after daemonize(): the PID syslog tags each message with
      * (via LOG_PID) is the daemon's real PID, not the pre-fork parent's. */
     logger_init("data-logger");
-    install_signal_handlers();
+
+    if (install_signal_handlers() != 0) {
+        syslog(LOG_ERR, "failed to install signal handlers");
+        logger_shutdown();
+        return EXIT_FAILURE;
+    }
+
+    /* Block our signals before any thread exists.
+     * They are only unblocked atomically inside sigsuspend() below. */
+    sigset_t orig_mask;
+    if (block_signals(&orig_mask) != 0) {
+        syslog(LOG_ERR, "failed to block signals");
+        logger_shutdown();
+        return EXIT_FAILURE;
+    }
+
+    /* Startup banner: PID + usage hint. */
+    {
+        char banner[160];
+        snprintf(banner, sizeof(banner), "data-logger started, PID %ld",
+                 (long)getpid());
+        announce(LOG_INFO, banner);
+        snprintf(banner, sizeof(banner),
+                 "  kill -USR1 %ld  -> START | kill -USR2 %ld  -> STOP | "
+                 "kill -TERM %ld  -> exit",
+                 (long)getpid(), (long)getpid(), (long)getpid());
+        announce(LOG_INFO, banner);
+    }
 
     if (pidfile_write(PIDFILE_PATH) != 0) {
         syslog(LOG_WARNING, "could not write pidfile %s", PIDFILE_PATH);
@@ -179,14 +271,34 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
-    /* Main loop: idles while the serial reader thread (decoupled,
-     * per the architecture) does the actual I/O, enqueuing parsed
-     * records into telemetry_rb. The persistence thread
+    /* Main loop: sleeps in sigsuspend() (zero CPU while idle) and wakes
+     * only when one of our signals arrives. The serial reader thread
+     * (decoupled, per the architecture) does the actual I/O, enqueuing
+     * parsed records into telemetry_rb. The persistence thread
      * hooks in here, draining telemetry_rb with rb_dequeue() and
-     * writing to SQLite. */
+     * writing to SQLite.
+     *
+     * Invariant: at the top of each iteration our signals are blocked,
+     * so the counters/flag cannot change between the checks and the
+     * next sigsuspend() -- no lost wake-ups. */
     while (g_running) {
-        sleep(1);
+        /* Atomically unblocks the signals and sleeps; returns after a
+         * handler has run, with the signals blocked again. */
+        sigsuspend(&orig_mask);
+
+        /* One message per signal received. START/STOP are only
+         * reported for now: no state machine yet. */
+        while (g_usr1_count > 0) {
+            g_usr1_count--;
+            announce(LOG_INFO, "SIGUSR1 received: START");
+        }
+        while (g_usr2_count > 0) {
+            g_usr2_count--;
+            announce(LOG_INFO, "SIGUSR2 received: STOP");
+        }
     }
+
+    announce(LOG_INFO, "termination signal received, shutting down");
 
     sr_reader_stop(serial_reader);
     sr_reader_destroy(serial_reader);
