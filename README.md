@@ -204,6 +204,85 @@ cjson` on macOS), drop the `vendor/cjson` directory, add `#include
 <cjson/cJSON.h>` in `telemetry.c`, and link with `-lcjson` instead of
 compiling `cJSON.c` directly.
 
+## Runtime control
+
+The logger is controlled at runtime with POSIX signals. At this stage the
+signals are only *received and reported* (no state machine, no logging
+control yet).
+
+| Signal    | Meaning | Current behaviour                                  |
+|-----------|---------|----------------------------------------------------|
+| `SIGUSR1` | START   | prints `SIGUSR1 received: START`                   |
+| `SIGUSR2` | STOP    | prints `SIGUSR2 received: STOP`                    |
+| `SIGINT`  | exit    | clean shutdown, exit code 0                        |
+| `SIGTERM` | exit    | clean shutdown, exit code 0                        |
+
+RESTART is out of scope for now (`SIGHUP` vs. FIFO to be decided later).
+
+Messages go to stdout (foreground) and to syslog (always; the only place
+you will see them with `-d`).
+
+### Manual test steps
+
+Build with warnings enabled and confirm there are none:
+
+```sh
+gcc -Wall -Wextra -pthread -o data-logger *.c   # or: make
+```
+
+1. **Start and PID banner**
+
+   ```sh
+   ./data-logger -p /dev/serial/by-id/<your-adapter>
+   ```
+
+   Expected:
+
+   ```
+   data-logger started, PID 12345
+     kill -USR1 12345  -> START | kill -USR2 12345  -> STOP | kill -TERM 12345  -> exit
+   ```
+
+2. **START / STOP** (from a second terminal, use the PID printed above)
+
+   ```sh
+   kill -USR1 <pid>   # -> "SIGUSR1 received: START"
+   kill -USR2 <pid>   # -> "SIGUSR2 received: STOP"
+   ```
+
+   Each signal must produce exactly one message. Sending several in a row
+   must produce the same number of messages:
+
+   ```sh
+   for i in 1 2 3; do kill -USR1 <pid>; done   # 3 START lines
+   ```
+
+3. **No CPU usage while idle**
+
+   ```sh
+   top -p <pid>      # or: ps -o pid,pcpu,stat -p <pid>
+   ```
+
+   `%CPU` should stay at 0.0 and the main thread should be sleeping (`S`).
+
+4. **Clean exit**
+
+   ```sh
+   kill -INT <pid>;  echo $?     # run in foreground, press Ctrl+C -> exit code 0
+   kill -TERM <pid>              # then check: wait <pid>; echo $?  -> 0
+   ```
+
+   Verify the pidfile `/var/run/data-logger.pid` is removed afterwards.
+
+5. **Daemon mode**
+
+   ```sh
+   ./data-logger -d -p /dev/serial/by-id/<your-adapter>
+   cat /var/run/data-logger.pid
+   kill -USR1 $(cat /var/run/data-logger.pid)
+   journalctl -t data-logger -n 5     # or: grep data-logger /var/log/syslog
+   ```
+
 ## Notes
 
 - The current `main.c` only proves the scaffold: it daemonizes (or runs in
