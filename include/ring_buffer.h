@@ -94,6 +94,17 @@ int rb_dequeue(ring_buffer_t *rb, telemetry_record_t *out);
  * available, or -1 immediately if the buffer was empty. */
 int rb_try_dequeue(ring_buffer_t *rb, telemetry_record_t *out);
 
+/* Non-blocking dequeue that also returns the record's lifetime sequence
+ * number (1 = first record ever enqueued). Records lost to overwrite show
+ * up as gaps between consecutive sequence numbers. Returns 0 on success,
+ * -1 if the buffer is empty (or an argument is NULL). */
+int rb_try_dequeue_seq(ring_buffer_t *rb, telemetry_record_t *out,
+                       unsigned long long *seq);
+
+/* Discards every stored record. Returns the sequence number of the last
+ * record enqueued so far; the next enqueued record will be that + 1. */
+unsigned long long rb_clear(ring_buffer_t *rb);
+
 /* Current number of records stored (thread-safe snapshot). */
 size_t rb_size(ring_buffer_t *rb);
 

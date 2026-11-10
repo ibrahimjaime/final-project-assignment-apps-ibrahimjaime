@@ -11,7 +11,7 @@
 CC       ?= gcc
 CFLAGS   += -Wall -Wextra -Werror -std=gnu11 -Iinclude -Ivendor/cjson -pthread
 LDFLAGS  ?=
-LDLIBS = -lserialport -pthread -lm
+LDLIBS = -lserialport -lsqlite3 -pthread -lm
 
 SRC_DIR    := src
 INC_DIR    := include

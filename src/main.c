@@ -9,8 +9,17 @@
 #include "serial_reader.h"
 #include "telemetry.h"
 #include "ring_buffer.h"
+#include "db.h"
+#include "writer.h"
 
 #define PIDFILE_PATH "/var/run/data-logger.pid"
+
+/* SQLite database on persistent storage (NOT tmpfs). Override with -b. */
+#define DB_PATH_DEFAULT "/var/lib/telemetry/telemetry.db"
+
+/* A batch is committed to SQLite every FLUSH_EVERY_N samples.
+ * Must be > 0 and < RING_BUFFER_CAPACITY. Override with -n. */
+#define FLUSH_EVERY_N_DEFAULT 900u
 
 /*
  * Fixed USB device path.
@@ -109,8 +118,12 @@ static int block_signals(sigset_t *old_mask)
 
 static void print_usage(const char *prog_name)
 {
-    fprintf(stderr, "Usage: %s [-d] [-p <serial-device-path>]\n", prog_name);
+    fprintf(stderr, "Usage: %s [-d] [-p <serial-device-path>] [-b <db-path>] [-n <flush-every-n>]\n",
+            prog_name);
     fprintf(stderr, "  -d   run as a background daemon\n");
+    fprintf(stderr, "  -b   SQLite database path (default: %s)\n", DB_PATH_DEFAULT);
+    fprintf(stderr, "  -n   commit a batch every N samples, 0 < N < %d (default: %u)\n",
+            RING_BUFFER_CAPACITY, FLUSH_EVERY_N_DEFAULT);
     fprintf(stderr, "  -p   serial device path (default: %s)\n", SERIAL_DEVICE_PATH);
     fprintf(stderr, "       e.g. -p /dev/serial/by-id/usb-...-if00-port0\n");
     fprintf(stderr, "       (list yours with: ls -l /dev/serial/by-id/)\n");
@@ -172,9 +185,11 @@ int main(int argc, char *argv[])
 {
     int daemon_mode = 0;
     const char *device_path = SERIAL_DEVICE_PATH;
+    const char *db_path = DB_PATH_DEFAULT;
+    unsigned long flush_n = FLUSH_EVERY_N_DEFAULT;
     int opt;
 
-    while ((opt = getopt(argc, argv, "dp:")) != -1) {
+    while ((opt = getopt(argc, argv, "dp:b:n:")) != -1) {
         switch (opt) {
         case 'd':
             daemon_mode = 1;
@@ -182,10 +197,25 @@ int main(int argc, char *argv[])
         case 'p':
             device_path = optarg;
             break;
+        case 'b':
+            db_path = optarg;
+            break;
+        case 'n':
+            flush_n = strtoul(optarg, NULL, 10);
+            break;
         default:
             print_usage(argv[0]);
             return EXIT_FAILURE;
         }
+    }
+
+    /* Checked before daemonize() so the error is still visible on stderr. */
+    if (flush_n == 0 || flush_n >= RING_BUFFER_CAPACITY) {
+        fprintf(stderr,
+                "error: FLUSH_EVERY_N (%lu) must be > 0 and < "
+                "RING_BUFFER_CAPACITY (%d)\n",
+                flush_n, RING_BUFFER_CAPACITY);
+        return EXIT_FAILURE;
     }
 
     if (daemon_mode) {
@@ -240,6 +270,28 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
+    /* Persistence: DB + writer thread. Created after block_signals() so the
+     * writer inherits the blocked mask (signals only reach this thread). */
+    db_t *db = db_init(db_path);
+    if (!db) {
+        syslog(LOG_ERR, "failed to initialise database '%s'", db_path);
+        fprintf(stderr, "error: cannot initialise database '%s' (see syslog)\n",
+                db_path);
+        rb_destroy(&telemetry_rb);
+        pidfile_remove(PIDFILE_PATH);
+        logger_shutdown();
+        return EXIT_FAILURE;
+    }
+    if (writer_start(db, &telemetry_rb, (unsigned)flush_n) != 0) {
+        syslog(LOG_ERR, "failed to start writer thread");
+        db_close(db);
+        rb_destroy(&telemetry_rb);
+        pidfile_remove(PIDFILE_PATH);
+        logger_shutdown();
+        return EXIT_FAILURE;
+    }
+    syslog(LOG_INFO, "database '%s', FLUSH_EVERY_N=%lu", db_path, flush_n);
+
     sr_config_t serial_cfg;
     sr_config_default(&serial_cfg);
     snprintf(serial_cfg.device_path, sizeof(serial_cfg.device_path), "%s",
@@ -256,6 +308,9 @@ int main(int argc, char *argv[])
                                                    &telemetry_rb);
     if (!serial_reader) {
         syslog(LOG_ERR, "failed to create serial reader for '%s'", device_path);
+        writer_send(CMD_EXIT);
+        writer_join();
+        db_close(db);
         rb_destroy(&telemetry_rb);
         pidfile_remove(PIDFILE_PATH);
         logger_shutdown();
@@ -264,6 +319,9 @@ int main(int argc, char *argv[])
 
     if (sr_reader_start(serial_reader) != 0) {
         syslog(LOG_ERR, "failed to start serial reader thread");
+        writer_send(CMD_EXIT);
+        writer_join();
+        db_close(db);
         sr_reader_destroy(serial_reader);
         rb_destroy(&telemetry_rb);
         pidfile_remove(PIDFILE_PATH);
@@ -291,10 +349,12 @@ int main(int argc, char *argv[])
         while (g_usr1_count > 0) {
             g_usr1_count--;
             announce(LOG_INFO, "SIGUSR1 received: START");
+            writer_send(CMD_START);   /* wipes DB + RAM buffer, starts logging */
         }
         while (g_usr2_count > 0) {
             g_usr2_count--;
             announce(LOG_INFO, "SIGUSR2 received: STOP");
+            writer_send(CMD_STOP);    /* flushes everything still pending */
         }
     }
 
@@ -302,6 +362,12 @@ int main(int argc, char *argv[])
 
     sr_reader_stop(serial_reader);
     sr_reader_destroy(serial_reader);
+
+    /* Producer is gone: the writer drains what is left, flushes it (if
+     * logging) and exits. Only then is the DB closed. */
+    writer_send(CMD_EXIT);
+    writer_join();
+    db_close(db);
 
     /* Safe to destroy now: the reader thread that could enqueue into
      * telemetry_rb has been stopped above. */

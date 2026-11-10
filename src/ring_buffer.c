@@ -112,6 +112,40 @@ int rb_try_dequeue(ring_buffer_t *rb, telemetry_record_t *out) {
     return 0;
 }
 
+int rb_try_dequeue_seq(ring_buffer_t *rb, telemetry_record_t *out,
+                       unsigned long long *seq) {
+    if (!rb || !out || !seq) return -1;
+
+    pthread_mutex_lock(&rb->lock);
+    if (rb->count == 0) {
+        pthread_mutex_unlock(&rb->lock);
+        return -1;
+    }
+
+    /* The newest element has lifetime index total_enqueued, so the oldest
+     * (head) has total_enqueued - count + 1. Overwritten records leave a
+     * gap in this sequence, which is how the consumer detects losses. */
+    *seq = rb->total_enqueued - rb->count + 1;
+    *out = rb->data[rb->head];
+    rb->head = (rb->head + 1) % RING_BUFFER_CAPACITY;
+    rb->count--;
+
+    pthread_mutex_unlock(&rb->lock);
+    return 0;
+}
+
+unsigned long long rb_clear(ring_buffer_t *rb) {
+    if (!rb) return 0;
+
+    pthread_mutex_lock(&rb->lock);
+    rb->head = 0;
+    rb->count = 0;
+    rb->has_been_full = false;
+    unsigned long long last_seq = rb->total_enqueued;
+    pthread_mutex_unlock(&rb->lock);
+    return last_seq;
+}
+
 size_t rb_size(ring_buffer_t *rb) {
     if (!rb) return 0;
     pthread_mutex_lock(&rb->lock);

@@ -2,12 +2,19 @@
 -- Design note: docs/telemetry-schema.md
 -- Apply with: sqlite3 /var/lib/telemetry/telemetry.db < schema.sql
 -- Safe to run more than once (IF NOT EXISTS).
+-- NOTE: db.c (db_init) creates the same schema at startup; keep both in sync.
 
 PRAGMA journal_mode = WAL;
 PRAGMA user_version = 1;            -- schema version, for future migrations
 
 CREATE TABLE IF NOT EXISTS telemetry (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    -- Sequence number from the RAM ring buffer (lifetime enqueue index).
+    -- Gaps = samples overwritten before being saved (overrun);
+    -- UNIQUE = no duplicates. Check with:
+    --   SELECT COUNT(*), MAX(seq)-MIN(seq)+1-COUNT(*) AS gaps FROM telemetry;
+    seq         INTEGER NOT NULL UNIQUE,
 
     -- Time
     ts          REAL    NOT NULL,   -- rec.ts: sample timestamp from the telemetry source, in
