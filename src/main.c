@@ -202,19 +202,17 @@ int main(int argc, char *argv[])
             db_path = optarg;
             break;
         case 'n':
-            flush_n = strtoul(optarg, NULL, 10);
+            if (!config_parse_flush_n(optarg, &flush_n)) {
+                fprintf(stderr,
+                        "error: -n must be an integer with 0 < N < %d\n",
+                        RING_BUFFER_CAPACITY);
+                return EXIT_FAILURE;
+            }
             break;
         default:
             print_usage(argv[0]);
             return EXIT_FAILURE;
         }
-    }
-
-    /* Checked before daemonize() so the error is still visible on stderr. */
-    if (!config_parse_flush_n(optarg, &flush_n)) {
-        fprintf(stderr, "error: -n must be an integer with 0 < N < %d\n",
-                RING_BUFFER_CAPACITY);
-        return EXIT_FAILURE;
     }
 
     if (daemon_mode) {
