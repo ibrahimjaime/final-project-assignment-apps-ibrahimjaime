@@ -16,7 +16,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential ruby libsqlite3-dev libserialport-dev
-          sudo gem install ceedling -v 1.2.2
+          sudo gem install ceedling -v 1.2.2 --no-document
 
       - name: Build application
         run: make
