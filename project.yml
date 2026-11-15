@@ -1,0 +1,48 @@
+:project:
+  :build_root: build_test
+  :use_mocks: TRUE
+  :test_file_prefix: test_
+
+:paths:
+  :test:
+    - +:tests
+  :source:
+    - src/**
+  :support:
+    - vendor/cjson/**
+  :include:
+    - include/**
+    - vendor/cjson
+
+:defines:
+  :test:
+    - UNIT_TEST
+
+:unity:
+  :defines:
+    - UNITY_INCLUDE_DOUBLE
+
+:flags:
+  :test:
+    :compile:
+      :*:
+        - -Wall
+        - -Wextra
+        - -Wshadow
+        - -Wconversion
+        - -fsanitize=address,undefined
+        - -fno-omit-frame-pointer
+        - -g
+    :link:
+      :*:
+        - -fsanitize=address,undefined
+
+:cmock:
+  :mock_prefix: mock_
+  :plugins:
+    - :callback
+  :treat_as:
+    db_t*: PTR
+
+:plugins:
+  :enabled: []

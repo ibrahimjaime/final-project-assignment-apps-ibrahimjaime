@@ -46,6 +46,15 @@ bool telemetry_parse_line(const char *line, size_t len,
         err_reason[0] = '\0';
     }
 
+    if (out == NULL)
+    {
+        if (err_reason && err_reason_len > 0)
+        {
+            snprintf(err_reason, err_reason_len, "null output pointer");
+        }
+        return false;
+    }
+
     if (line == NULL || len == 0)
     {
         if (err_reason)
@@ -55,9 +64,6 @@ bool telemetry_parse_line(const char *line, size_t len,
         return false;
     }
 
-    /* cJSON_ParseWithLengthOpts lets us bound the parse to exactly
-     * 'len' bytes, so we don't rely on 'line' being NUL-terminated
-     * and we don't run past a truncated/garbled buffer. */
     const char *parse_end = NULL;
     cJSON *root = cJSON_ParseWithLengthOpts(line, len, &parse_end, false);
 
