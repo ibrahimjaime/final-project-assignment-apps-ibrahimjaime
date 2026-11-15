@@ -1,0 +1,25 @@
+name: app-tests
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential ruby libsqlite3-dev libserialport-dev
+          sudo gem install ceedling -v 1.2.2 --no-document
+
+      - name: Build application
+        run: make
+
+      - name: Run unit and mock tests
+        run: make test

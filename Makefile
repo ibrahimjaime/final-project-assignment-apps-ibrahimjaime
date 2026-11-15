@@ -24,7 +24,7 @@ vpath %.c $(SRC_DIR) $(VENDOR_DIR)
 SRCS := $(notdir $(wildcard $(SRC_DIR)/*.c)) $(notdir $(wildcard $(VENDOR_DIR)/*.c))
 OBJS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(SRCS))
 
-.PHONY: all clean
+.PHONY: all clean test test-clean
 
 all: $(TARGET)
 
@@ -38,4 +38,13 @@ $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
 clean:
-	rm -rf $(BUILD_DIR) $(TARGET)
+	rm -rf $(BUILD_DIR) $(TARGET) build_test
+
+# --- Unit tests (Ceedling) ---
+# Native only: needs Ruby + Ceedling, never run during the Yocto cross-build.
+test:
+	@command -v ceedling >/dev/null 2>&1 || { echo "ceedling not found: gem install ceedling"; exit 1; }
+	ceedling test:all
+
+test-clean:
+	ceedling clobber

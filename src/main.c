@@ -11,6 +11,7 @@
 #include "ring_buffer.h"
 #include "db.h"
 #include "writer.h"
+#include "config.h"
 
 #define PIDFILE_PATH "/var/run/data-logger.pid"
 
@@ -210,11 +211,9 @@ int main(int argc, char *argv[])
     }
 
     /* Checked before daemonize() so the error is still visible on stderr. */
-    if (flush_n == 0 || flush_n >= RING_BUFFER_CAPACITY) {
-        fprintf(stderr,
-                "error: FLUSH_EVERY_N (%lu) must be > 0 and < "
-                "RING_BUFFER_CAPACITY (%d)\n",
-                flush_n, RING_BUFFER_CAPACITY);
+    if (!config_parse_flush_n(optarg, &flush_n)) {
+        fprintf(stderr, "error: -n must be an integer with 0 < N < %d\n",
+                RING_BUFFER_CAPACITY);
         return EXIT_FAILURE;
     }
 
